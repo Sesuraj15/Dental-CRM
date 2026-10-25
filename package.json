@@ -1,1 +1,22 @@
-{"name":"dentadesk","version":"1.0.0","description":"Dental clinic CRM & ERP with WhatsApp auto-booking and ad-lead capture","main":"server.js","scripts":{"start":"node server.js"},"engines":{"node":">=18"},"dependencies":{"bcryptjs":"^2.4.3","dotenv":"^16.4.5","express":"^4.19.2","jsonwebtoken":"^9.0.2","node-cron":"^3.0.3"}}
+{
+  "name": "dentadesk",
+  "version": "1.0.0",
+  "description": "Dental clinic CRM & ERP with WhatsApp auto-booking and autonomous AI lead qualification",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "npm --prefix client run build",
+    "client:dev": "npm --prefix client run dev",
+    "client:build": "npm --prefix client run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "node-cron": "^3.0.3"
+  }
+}
