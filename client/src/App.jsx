@@ -376,6 +376,15 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      {/* Ambient Animated Background Mesh */}
+      <div className="ambient-background-layer" aria-hidden="true">
+        <div className="ambient-orb orb-1" />
+        <div className="ambient-orb orb-2" />
+        <div className="ambient-orb orb-3" />
+        <div className="ambient-orb orb-4" />
+        <div className="ambient-grid-overlay" />
+      </div>
+
       {/* Sidebar Navigation */}
       <Sidebar
         currentView={currentView}
