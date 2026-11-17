@@ -1,203 +1,251 @@
-const cron=require('node-cron'),{d,save}=require('./db'),core=require('./core'),wa=require('./wa'),leads=require('./leads'),ai=require('./ai'),bot=require('./bot');
+const cron = require('node-cron');
+const { db, getSetting } = require('./db');
+const core = require('./core');
+const wa = require('./wa');
+const leads = require('./leads');
+const ai = require('./ai');
+const bot = require('./bot');
 
-const tz={timezone:process.env.TZ||'Asia/Kolkata'};
+const tz = { timezone: process.env.TZ || getSetting('timezone', 'Asia/Kolkata') };
 
-// In-memory & DB automation monitor
-if(!d.automationStatus){
-  d.automationStatus={
-    recall:{lastRun:null,lastResult:'Pending first run',totalSent:0},
-    reminders:{lastRun:null,lastResult:'Pending first run',totalSent:0},
-    noShows:{lastRun:null,lastResult:'Pending first run',totalSent:0},
-    pollSheet:{lastRun:null,lastResult:'Pending first run',totalSent:0},
-    leadFollowup:{lastRun:null,lastResult:'Pending first run',totalProcessed:0}
-  };
-}
-if(!d.automationLogs) d.automationLogs=[];
+// Automation state in memory with DB fallback
+const statusState = {
+  recall: { lastRun: null, lastResult: 'Waiting for scheduled run', totalSent: 0 },
+  reminders: { lastRun: null, lastResult: 'Waiting for scheduled run', totalSent: 0 },
+  noShows: { lastRun: null, lastResult: 'Waiting for scheduled run', totalSent: 0 },
+  pollSheet: { lastRun: null, lastResult: 'Waiting for scheduled run', totalSent: 0 },
+  leadFollowup: { lastRun: null, lastResult: 'Waiting for scheduled run', totalProcessed: 0 }
+};
 
-function logAutomation(task,msg){
-  d.automationLogs.unshift({
+const automationLogs = [];
+
+function logAutomation(task, msg) {
+  automationLogs.unshift({
     task,
     msg,
-    at:Date.now()
+    at: Date.now()
   });
-  if(d.automationLogs.length>50) d.automationLogs.length=50;
-  save();
+  if (automationLogs.length > 50) automationLogs.length = 50;
 }
 
 /**
  * 1. Automatic Patient Recall (Runs daily at 10:00 AM)
- * Finds patients whose last visit was >= recallDays ago, who have no future booked visits,
- * and who haven't been recalled in the last 21 days.
+ * Sends exactly ONE message per overdue patient (template or text, never duplicate!)
  */
-async function runRecall(thresholdDays){
-  const due=core.dueForRecall(thresholdDays);
-  const sentList=[];
-  for(const p of due){
-    try{
+async function runRecall(thresholdDays) {
+  const due = core.dueForRecall(thresholdDays);
+  const sentList = [];
+
+  for (const p of due) {
+    try {
       await core.recall(p);
       sentList.push(p.name);
-    }catch(err){
-      console.error('Error recalling patient',p.name,err);
+    } catch (err) {
+      console.error('Error recalling patient', p.name, err);
     }
   }
 
-  const resultMsg=sentList.length
-    ? `Sent automated recalls to ${sentList.length} patient(s): ${sentList.join(', ')}`
-    : `No patients currently due for recall (${due.length} scanned)`;
+  const resultMsg = sentList.length
+    ? `Sent automated recall reminders to ${sentList.length} patient(s): ${sentList.join(', ')}`
+    : `Scanned patients: No patients currently due for recall (${due.length} scanned)`;
 
-  d.automationStatus.recall={
-    lastRun:Date.now(),
-    lastResult:resultMsg,
-    totalSent:(d.automationStatus.recall?.totalSent||0)+sentList.length
+  statusState.recall = {
+    lastRun: Date.now(),
+    lastResult: resultMsg,
+    totalSent: (statusState.recall?.totalSent || 0) + sentList.length
   };
-  logAutomation('recall',resultMsg);
+  logAutomation('recall', resultMsg);
 
-  if(sentList.length){
+  if (sentList.length) {
     core.notify(`🔔 Automated Recall: Contacted ${sentList.length} patient(s) due for checkup`);
   }
-  return {sent:sentList.length,patients:sentList,message:resultMsg};
+  return { sent: sentList.length, patients: sentList, message: resultMsg };
 }
 
 /**
  * 2. Automatic 24-Hour Appointment Reminders (Runs every hour)
- * Checks booked appointments in the next 24 hours that haven't been reminded yet.
+ * Checks booked appointments in the next 24 hours that haven't been reminded.
+ * Sends ONLY ONE message per reminder (template if available/required, or text. Never both!).
  */
-async function reminders(){
-  const now=Date.now();
-  const remindedList=[];
-  for(const a of d.appointments){
-    if(a.status!=='Booked'||a.reminded)continue;
-    const t=new Date(a.date+'T'+a.time).getTime();
-    if(t>now&&t-now<=864e5){
-      const p=d.patients.find(x=>x.id===a.patientId);
-      if(!p)continue;
-      a.reminded=true;
-      save();
-      const firstName=(p.name||'there').split(' ')[0];
-      await wa.template(p.phone,process.env.WA_REMINDER_TEMPLATE||'appointment_reminder',[firstName,core.lab(a.date),a.time]).catch(console.error);
-      await wa.text(p.phone,`Hi ${firstName}! 🦷 Reminder: Your dental appointment is on ${core.lab(a.date)} at ${a.time}. Reply CANCEL or RESCHEDULE if you need to adjust. See you soon!`).catch(console.error);
+async function reminders() {
+  const now = Date.now();
+  const remindedList = [];
+
+  const appts = db.prepare(`
+    SELECT * FROM appointments
+    WHERE status = 'Booked' AND reminded = 0 AND deletedAt IS NULL
+  `).all();
+
+  for (const a of appts) {
+    const t = new Date(a.date + 'T' + a.time).getTime();
+    if (t > now && (t - now) <= 864e5) {
+      const p = db.prepare('SELECT * FROM patients WHERE id = ? AND deletedAt IS NULL').get(a.patientId);
+      if (!p || p.optOut) continue;
+
+      db.prepare('UPDATE appointments SET reminded = 1, updatedAt = ? WHERE id = ?').run(now, a.id);
+      const firstName = (p.name || 'there').split(' ')[0];
+      const clinicName = getSetting('clinicName', 'DentaDesk Dental Care');
+
+      const isLive = wa.on();
+      const within24h = wa.isWithin24HourWindow(p.phone);
+      const reminderTemplate = process.env.WA_REMINDER_TEMPLATE || 'appointment_reminder';
+
+      if (isLive && !within24h && reminderTemplate) {
+        // Send single template
+        await wa.template(p.phone, reminderTemplate, [firstName, core.lab(a.date), a.time, clinicName]).catch(console.error);
+      } else {
+        // Send single text
+        await wa.text(
+          p.phone,
+          `Hi ${firstName}! 🦷 Reminder: Your dental appointment at ${clinicName} is on ${core.lab(a.date)} at ${a.time}. Reply CANCEL or RESCHEDULE if your plans change. See you soon!`
+        ).catch(console.error);
+      }
+
       remindedList.push(`${p.name} (${core.lab(a.date)} ${a.time})`);
     }
   }
 
-  const resultMsg=remindedList.length
-    ? `Dispatched 24h reminders to ${remindedList.length} patient(s): ${remindedList.join(', ')}`
+  const resultMsg = remindedList.length
+    ? `Dispatched 24h reminders to ${remindedList.length} appointment(s): ${remindedList.join(', ')}`
     : 'Checked upcoming schedule: No appointments requiring 24h reminders right now';
 
-  d.automationStatus.reminders={
-    lastRun:Date.now(),
-    lastResult:resultMsg,
-    totalSent:(d.automationStatus.reminders?.totalSent||0)+remindedList.length
+  statusState.reminders = {
+    lastRun: Date.now(),
+    lastResult: resultMsg,
+    totalSent: (statusState.reminders?.totalSent || 0) + remindedList.length
   };
-  logAutomation('reminders',resultMsg);
+  logAutomation('reminders', resultMsg);
 
-  return {remindedCount:remindedList.length,remindedList,message:resultMsg};
+  return { remindedCount: remindedList.length, remindedList, message: resultMsg };
 }
 
 /**
  * 3. Automatic Missed Visit / No-Show Follow-up (Runs daily at 21:30)
- * Finds appointments with date < today that were never completed or cancelled,
- * marks them No-show, alerts the clinic, and automatically messages the patient.
+ * Evaluates today's visits (date === today) that were not completed or cancelled,
+ * marks them No-show, alerts clinic desk, and sends timely re-booking message with correct date wording.
  */
-async function noShows(){
-  const t=core.K(new Date());
-  const noShowList=[];
-  for(const a of d.appointments){
-    if(a.status==='Booked'&&a.date<t){
-      a.status='No-show';
-      save();
-      const p=d.patients.find(x=>x.id===a.patientId);
-      if(p){
-        noShowList.push(`${p.name} (${core.lab(a.date)} ${a.time})`);
-        core.notify(`🚨 Auto No-Show: ${p.name} missed visit on ${core.lab(a.date)} at ${a.time}`);
-        const firstName=(p.name||'there').split(' ')[0];
-        await wa.text(p.phone,`Hi ${firstName}, we missed you today at your scheduled dental visit. Your oral health is important to us—reply BOOK anytime to pick a convenient new slot! 🦷`).catch(console.error);
-      }
+async function noShows() {
+  const todayStr = core.K(new Date());
+  const now = Date.now();
+  const noShowList = [];
+
+  // 1. Check appointments scheduled for TODAY that were left Booked
+  const todayMissed = db.prepare(`
+    SELECT * FROM appointments
+    WHERE status = 'Booked' AND date = ? AND deletedAt IS NULL
+  `).all(todayStr);
+
+  for (const a of todayMissed) {
+    db.prepare(`UPDATE appointments SET status = 'No-show', updatedAt = ? WHERE id = ?`).run(now, a.id);
+    const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(a.patientId);
+
+    if (p && !p.optOut) {
+      noShowList.push(`${p.name} (Today ${a.time})`);
+      core.notify(`🚨 Auto No-Show: ${p.name} missed visit today at ${a.time}`);
+      const firstName = (p.name || 'there').split(' ')[0];
+      await wa.text(
+        p.phone,
+        `Hi ${firstName}, we missed you today at your scheduled dental visit. Your oral health is important to us—reply BOOK anytime to pick a convenient new slot! 🦷`
+      ).catch(console.error);
     }
   }
 
-  const resultMsg=noShowList.length
+  // 2. Also catch any past unclosed appointments with accurate wording
+  const pastMissed = db.prepare(`
+    SELECT * FROM appointments
+    WHERE status = 'Booked' AND date < ? AND deletedAt IS NULL
+  `).all(todayStr);
+
+  for (const a of pastMissed) {
+    db.prepare(`UPDATE appointments SET status = 'No-show', updatedAt = ? WHERE id = ?`).run(now, a.id);
+    const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(a.patientId);
+    if (p && !p.optOut) {
+      noShowList.push(`${p.name} (${core.lab(a.date)} ${a.time})`);
+      const firstName = (p.name || 'there').split(' ')[0];
+      await wa.text(
+        p.phone,
+        `Hi ${firstName}, we missed your dental visit on ${core.lab(a.date)}. Reply BOOK anytime to reschedule a convenient time with our clinic! 🦷`
+      ).catch(console.error);
+    }
+  }
+
+  const resultMsg = noShowList.length
     ? `Flagged ${noShowList.length} missed visit(s) and sent re-booking messages: ${noShowList.join(', ')}`
-    : 'No missed appointments detected today';
+    : 'Checked daily schedule: No missed appointments detected today';
 
-  d.automationStatus.noShows={
-    lastRun:Date.now(),
-    lastResult:resultMsg,
-    totalSent:(d.automationStatus.noShows?.totalSent||0)+noShowList.length
+  statusState.noShows = {
+    lastRun: Date.now(),
+    lastResult: resultMsg,
+    totalSent: (statusState.noShows?.totalSent || 0) + noShowList.length
   };
-  logAutomation('noShows',resultMsg);
+  logAutomation('noShows', resultMsg);
 
-  return {noShowCount:noShowList.length,noShowList,message:resultMsg};
+  return { noShowCount: noShowList.length, noShowList, message: resultMsg };
 }
 
 /**
  * 4. Automatic Google Sheet Lead Polling (Runs every 10 minutes)
  */
-async function pollSheetAuto(){
-  const count=await leads.pollSheet();
-  const resultMsg=count>0
-    ? `Polled Google Sheet: Ingested ${count} new lead(s) with automated WhatsApp engagement`
+async function pollSheetAuto() {
+  const count = await leads.pollSheet();
+  const resultMsg = count > 0
+    ? `Polled Google Sheet: Ingested ${count} new lead(s) with automated outreach`
     : 'Polled Google Sheet: No new rows found';
 
-  d.automationStatus.pollSheet={
-    lastRun:Date.now(),
-    lastResult:resultMsg,
-    totalSent:(d.automationStatus.pollSheet?.totalSent||0)+count
+  statusState.pollSheet = {
+    lastRun: Date.now(),
+    lastResult: resultMsg,
+    totalSent: (statusState.pollSheet?.totalSent || 0) + count
   };
-  logAutomation('pollSheet',resultMsg);
-  return {count,message:resultMsg};
+  logAutomation('pollSheet', resultMsg);
+  return { count, message: resultMsg };
 }
 
 /**
- * 5. Autonomous AI Lead Follow-up & Triage Agent (Runs every 3 hours or on-demand)
- * Follows up with all unbooked leads without requiring human staff.
- * Inquires about tooth concerns, categorizes clinical issues, and follows up until booking is completed.
+ * 5. Autonomous Lead Follow-up Agent (Runs every 3 hours or on-demand)
  */
-async function runLeadFollowupAgent(force = false){
+async function runLeadFollowupAgent(force = false) {
   const now = Date.now();
-  const cooldownMs = force ? 0 : 3 * 3600 * 1000; // 3 hours cooldown between autonomous touches
-  const clinicName = d.settings?.clinicName || 'DentaDesk Dental Care';
+  const cooldownMs = force ? 0 : 3 * 3600 * 1000;
+  const clinicName = getSetting('clinicName', 'DentaDesk Dental Care');
+  const doctorName = getSetting('doctorName', 'Dr. Raj');
 
-  const eligibleLeads = (d.leads || []).filter(l => {
-    // Only unbooked leads
-    if (['Booked', 'Won', 'Lost'].includes(l.status)) return false;
-    if (l.aiStage === 'BOOKED' || l.aiStage === 'PAUSED') return false;
-    // Max 4 followups
-    if ((l.followupCount || 0) >= 4) return false;
-    // Check cooldown
-    if (l.lastFollowupAt && (now - l.lastFollowupAt < cooldownMs)) return false;
+  const eligibleLeads = db.prepare(`
+    SELECT * FROM leads
+    WHERE status NOT IN ('Booked', 'Won', 'Lost')
+      AND aiStage NOT IN ('BOOKED', 'PAUSED')
+      AND followupCount < 4
+      AND deletedAt IS NULL
+  `).all().filter(l => {
+    if (l.lastFollowupAt && (now - l.lastFollowupAt) < cooldownMs) return false;
     return true;
   });
 
   const processed = [];
   for (const l of eligibleLeads) {
     try {
-      const p = core.contact(l.phone, l.name, l.source);
-
       if (!l.aiStage || l.aiStage === 'NEW') {
-        // Step 1: Dispatch diagnostic inquiry
         await core.engage(l);
         processed.push({ name: l.name, phone: l.phone, stage: 'INQUIRY_SENT' });
         continue;
       }
 
-      // Generate context-aware follow-up
-      const msg = ai.generateAutonomousLeadFollowup(l, clinicName);
-      await wa.text(p.phone, msg);
+      const msg = ai.generateAutonomousLeadFollowup(l, clinicName, doctorName);
+      await wa.text(l.phone, msg);
 
-      l.followupCount = (l.followupCount || 0) + 1;
-      l.lastFollowupAt = Date.now();
-      if (l.followupCount >= 4) {
-        l.aiStage = 'PAUSED';
-      }
-      save();
+      const newCount = (l.followupCount || 0) + 1;
+      const newStage = newCount >= 4 ? 'PAUSED' : l.aiStage;
 
-      // If slots were already offered, present them directly
+      db.prepare(`
+        UPDATE leads SET followupCount = ?, aiStage = ?, lastFollowupAt = ?, updatedAt = ?
+        WHERE id = ?
+      `).run(newCount, newStage, now, now, l.id);
+
       if (l.aiStage === 'SLOTS_OFFERED') {
-        await bot.offer(p.phone, 0);
+        await bot.offer(l.phone, 0);
       }
 
-      processed.push({ name: l.name, phone: l.phone, stage: l.aiStage, count: l.followupCount });
+      processed.push({ name: l.name, phone: l.phone, stage: newStage, count: newCount });
     } catch (err) {
       console.error('Error running autonomous lead followup on', l.name, err);
     }
@@ -205,12 +253,12 @@ async function runLeadFollowupAgent(force = false){
 
   const resultMsg = processed.length
     ? `Autonomous Lead Agent followed up with ${processed.length} prospective lead(s)`
-    : `Scanned ${d.leads?.length || 0} leads: All leads are either booked, on cooldown, or fully nurtured`;
+    : 'Scanned leads: All active leads are either booked, on cooldown, or fully nurtured';
 
-  d.automationStatus.leadFollowup = {
+  statusState.leadFollowup = {
     lastRun: Date.now(),
     lastResult: resultMsg,
-    totalProcessed: (d.automationStatus.leadFollowup?.totalProcessed || 0) + processed.length
+    totalProcessed: (statusState.leadFollowup?.totalProcessed || 0) + processed.length
   };
   logAutomation('leadFollowup', resultMsg);
 
@@ -221,74 +269,74 @@ async function runLeadFollowupAgent(force = false){
   return { processedCount: processed.length, processed, message: resultMsg };
 }
 
-function getStatus(){
+function getStatus() {
   return {
-    timezone:tz.timezone,
-    currentTime:new Date().toLocaleString('en-IN',{timeZone:tz.timezone}),
-    tasks:{
-      leadFollowup:{
-        id:'leadFollowup',
-        title:'Autonomous AI Lead Nurturing & Follow-up',
-        cronSchedule:'Every 3 hours (0 */3 * * *)',
-        description:'100% autonomous agent that asks leads about their teeth concerns, performs clinical triage, and continuously follows up until an appointment is booked.',
-        lastRun:d.automationStatus?.leadFollowup?.lastRun,
-        lastResult:d.automationStatus?.leadFollowup?.lastResult||'Waiting for scheduled run',
-        totalProcessed:d.automationStatus?.leadFollowup?.totalProcessed||0
+    timezone: tz.timezone,
+    currentTime: new Date().toLocaleString('en-IN', { timeZone: tz.timezone }),
+    tasks: {
+      leadFollowup: {
+        id: 'leadFollowup',
+        title: 'Autonomous Lead Care Outreach & Nurturing',
+        cronSchedule: 'Every 3 hours (0 */3 * * *)',
+        description: 'Conducts initial care inquiries and provides polite appointment scheduling follow-ups.',
+        lastRun: statusState.leadFollowup.lastRun,
+        lastResult: statusState.leadFollowup.lastResult,
+        totalProcessed: statusState.leadFollowup.totalProcessed
       },
-      recall:{
-        id:'recall',
-        title:'Automated Patient Recalls',
-        cronSchedule:'Daily at 10:00 AM (0 10 * * *)',
-        description:'Scans all patient records. Overdue patients (e.g. 6 months past checkup/cleaning) automatically receive personalized WhatsApp recall invitations.',
-        lastRun:d.automationStatus?.recall?.lastRun,
-        lastResult:d.automationStatus?.recall?.lastResult||'Waiting for scheduled run',
-        totalSent:d.automationStatus?.recall?.totalSent||0
+      recall: {
+        id: 'recall',
+        title: 'Automated 6-Month Hygiene Recalls',
+        cronSchedule: 'Daily at 10:00 AM (0 10 * * *)',
+        description: 'Notifies overdue hygiene patients for routine checkup with a single template or message.',
+        lastRun: statusState.recall.lastRun,
+        lastResult: statusState.recall.lastResult,
+        totalSent: statusState.recall.totalSent
       },
-      reminders:{
-        id:'reminders',
-        title:'24-Hour Visit Reminders',
-        cronSchedule:'Hourly on the hour (0 * * * *)',
-        description:'Monitors upcoming visits and automatically sends WhatsApp reminders 24 hours prior with service details and easy CANCEL / RESCHEDULE replies.',
-        lastRun:d.automationStatus?.reminders?.lastRun,
-        lastResult:d.automationStatus?.reminders?.lastResult||'Waiting for scheduled run',
-        totalSent:d.automationStatus?.reminders?.totalSent||0
+      reminders: {
+        id: 'reminders',
+        title: '24-Hour Visit Reminders',
+        cronSchedule: 'Hourly on the hour (0 * * * *)',
+        description: 'Dispatches single 24-hour visit reminders for booked appointments with easy cancellation confirmations.',
+        lastRun: statusState.reminders.lastRun,
+        lastResult: statusState.reminders.lastResult,
+        totalSent: statusState.reminders.totalSent
       },
-      noShows:{
-        id:'noShows',
-        title:'Missed Appointment Re-engagement',
-        cronSchedule:'Daily at 9:30 PM (30 21 * * *)',
-        description:'Flags missed appointments at the end of the day and automatically reaches out to the patient on WhatsApp to rebook.',
-        lastRun:d.automationStatus?.noShows?.lastRun,
-        lastResult:d.automationStatus?.noShows?.lastResult||'Waiting for scheduled run',
-        totalSent:d.automationStatus?.noShows?.totalSent||0
+      noShows: {
+        id: 'noShows',
+        title: 'Missed Appointment Re-engagement',
+        cronSchedule: 'Daily at 9:30 PM (30 21 * * *)',
+        description: 'Flags today’s missed visits at 21:30 and reaches out to help the patient rebook.',
+        lastRun: statusState.noShows.lastRun,
+        lastResult: statusState.noShows.lastResult,
+        totalSent: statusState.noShows.totalSent
       },
-      pollSheet:{
-        id:'pollSheet',
-        title:'Google Sheet Lead Sync & Auto-Engage',
-        cronSchedule:'Every 10 minutes (*/10 * * * *)',
-        description:'Imports leads from connected spreadsheets and immediately dispatches WhatsApp welcome messages with booking links.',
-        lastRun:d.automationStatus?.pollSheet?.lastRun,
-        lastResult:d.automationStatus?.pollSheet?.lastResult||'Waiting for scheduled run',
-        totalSent:d.automationStatus?.pollSheet?.totalSent||0
+      pollSheet: {
+        id: 'pollSheet',
+        title: 'Google Sheet Lead Sync & Auto-Engage',
+        cronSchedule: 'Every 10 minutes (*/10 * * * *)',
+        description: 'Imports new leads from published spreadsheets and prevents re-importing deleted records.',
+        lastRun: statusState.pollSheet.lastRun,
+        lastResult: statusState.pollSheet.lastResult,
+        totalSent: statusState.pollSheet.totalSent
       }
     },
-    recentLogs:d.automationLogs?.slice(0,15)||[]
+    recentLogs: automationLogs.slice(0, 15)
   };
 }
 
-module.exports={
+module.exports = {
   runRecall,
   reminders,
   noShows,
   pollSheetAuto,
   runLeadFollowupAgent,
   getStatus,
-  start(){
+  start() {
     console.log(`[Scheduler] Starting cron jobs in timezone: ${tz.timezone}`);
-    cron.schedule('0 10 * * *',()=>runRecall(),tz);
-    cron.schedule('0 * * * *',reminders,tz);
-    cron.schedule('30 21 * * *',noShows,tz);
-    cron.schedule('*/10 * * * *',pollSheetAuto,tz);
-    cron.schedule('0 */3 * * *',()=>runLeadFollowupAgent(),tz);
+    cron.schedule('0 10 * * *', () => runRecall(), tz);
+    cron.schedule('0 * * * *', reminders, tz);
+    cron.schedule('30 21 * * *', noShows, tz);
+    cron.schedule('*/10 * * * *', pollSheetAuto, tz);
+    cron.schedule('0 */3 * * *', () => runLeadFollowupAgent(), tz);
   }
 };

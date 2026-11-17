@@ -1,5 +1,12 @@
 node_modules
 client/node_modules
 client/dist
+public/assets
 .env
+.env.local
 data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite.tmp
+backups
