@@ -42,31 +42,31 @@ export default function Sidebar({
       {/* Brand Header */}
       <div style={{ padding: '24px 20px', display: 'flex', alignItems: 'center', gap: '12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
         <div style={{
-          width: 42,
-          height: 42,
+          width: 40,
+          height: 40,
           borderRadius: 12,
-          background: 'linear-gradient(135deg, var(--indigo) 0%, var(--cyan) 100%)',
+          background: 'linear-gradient(135deg, #0d9488 0%, #06b6d4 100%)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           color: '#ffffff',
-          boxShadow: '0 4px 16px var(--indigo-glow)'
+          boxShadow: '0 4px 14px rgba(6, 182, 212, 0.4)'
         }}>
           <Activity size={22} />
         </div>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ fontFamily: 'Outfit', fontWeight: 800, fontSize: 18, color: '#ffffff', letterSpacing: '-0.02em' }}>
-              Denta<span style={{ background: 'linear-gradient(135deg, #818cf8 0%, #38bdf8 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Desk</span>
+              Denta<span style={{ color: '#06b6d4' }}>Desk</span>
             </span>
             <span style={{
-              background: 'rgba(99, 102, 241, 0.2)',
-              color: '#818cf8',
+              background: 'rgba(6, 182, 212, 0.15)',
+              color: '#06b6d4',
               fontSize: 10,
               fontWeight: 800,
-              padding: '2px 7px',
-              borderRadius: 6,
-              border: '1px solid rgba(99, 102, 241, 0.4)'
+              padding: '2px 6px',
+              borderRadius: 4,
+              border: '1px solid rgba(6, 182, 212, 0.3)'
             }}>AI</span>
           </div>
           <p style={{ fontSize: 11, color: '#94a3b8', margin: 0 }}>Autonomous Dental Practice</p>
@@ -89,11 +89,12 @@ export default function Sidebar({
               className={`nav-item ${isActive ? 'active' : ''}`}
               style={{
                 width: 'calc(100% - 24px)',
+                background: isActive ? 'linear-gradient(90deg, rgba(13, 148, 136, 0.25) 0%, rgba(6, 182, 212, 0.12) 100%)' : 'transparent',
                 border: 'none',
                 textAlign: 'left'
               }}
             >
-              <Icon size={18} style={{ color: isActive ? 'var(--cyan)' : '#94a3b8', flexShrink: 0 }} />
+              <Icon size={18} style={{ color: isActive ? '#06b6d4' : '#94a3b8', flexShrink: 0 }} />
               <span style={{ flex: 1, fontSize: 13.5, fontWeight: isActive ? 600 : 500 }}>{item.label}</span>
               {item.badge && (
                 <span style={{
@@ -101,7 +102,7 @@ export default function Sidebar({
                   fontWeight: 700,
                   padding: '2px 7px',
                   borderRadius: 9999,
-                  background: isActive ? 'linear-gradient(135deg, var(--indigo) 0%, var(--cyan) 100%)' : 'rgba(255,255,255,0.1)',
+                  background: isActive ? '#0d9488' : 'rgba(255,255,255,0.1)',
                   color: '#ffffff'
                 }}>
                   {item.badge}

@@ -6,7 +6,9 @@ const crypto = require('crypto');
 
 const DB_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 fs.mkdirSync(DB_DIR, { recursive: true });
-const DB_FILE = process.env.DB_FILE || path.join(DB_DIR, 'dentadesk.sqlite');
+const isTestEnv = process.env.NODE_ENV === 'test' || process.argv.some(a => a.includes('test'));
+const defaultDbName = isTestEnv ? 'dentadesk.test.sqlite' : 'dentadesk.sqlite';
+const DB_FILE = process.env.DB_FILE || path.join(DB_DIR, defaultDbName);
 const BACKUP_DIR = path.join(DB_DIR, 'backups');
 fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
@@ -269,7 +271,7 @@ function seedDefaults() {
     if (legacyData?.users?.length) {
       for (const u of legacyData.users) {
         db.prepare(`
-          INSERT INTO users (id, username, name, role, hash, tokenVersion, createdAt, updatedAt)
+          INSERT OR IGNORE INTO users (id, username, name, role, hash, tokenVersion, createdAt, updatedAt)
           VALUES (?, ?, ?, ?, ?, 1, ?, ?)
         `).run(u.id, u.username, u.name || u.username, u.role, u.hash, now, now);
       }
@@ -278,11 +280,11 @@ function seedDefaults() {
       const defaultOwnerPw = process.env.OWNER_PASSWORD || crypto.randomBytes(5).toString('hex');
       const defaultAdminPw = process.env.ADMIN_PASSWORD || crypto.randomBytes(5).toString('hex');
       db.prepare(`
-        INSERT INTO users (username, name, role, hash, tokenVersion, createdAt, updatedAt)
+        INSERT OR IGNORE INTO users (username, name, role, hash, tokenVersion, createdAt, updatedAt)
         VALUES (?, ?, ?, ?, 1, ?, ?)
       `).run('owner', 'Clinic Owner', 'Owner', bcrypt.hashSync(defaultOwnerPw, 10), now, now);
       db.prepare(`
-        INSERT INTO users (username, name, role, hash, tokenVersion, createdAt, updatedAt)
+        INSERT OR IGNORE INTO users (username, name, role, hash, tokenVersion, createdAt, updatedAt)
         VALUES (?, ?, ?, ?, 1, ?, ?)
       `).run('admin', 'Clinic Receptionist', 'Admin', bcrypt.hashSync(defaultAdminPw, 10), now, now);
       console.log(`Created login owner / ${defaultOwnerPw} (role: Owner)`);
@@ -341,7 +343,7 @@ function seedDefaults() {
 
     for (const item of defaultInventory) {
       db.prepare(`
-        INSERT INTO inventory (id, name, qty, minQty, unit, createdAt, updatedAt)
+        INSERT OR IGNORE INTO inventory (id, name, qty, minQty, unit, createdAt, updatedAt)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(item.id, item.name, item.qty, item.min || item.minQty || 5, item.unit || 'units', now, now);
     }
@@ -393,7 +395,7 @@ function seedDefaults() {
       const invId = itemMap[b.item];
       if (invId) {
         db.prepare(`
-          INSERT INTO service_supplies (service, inventoryId, qtyPerService)
+          INSERT OR IGNORE INTO service_supplies (service, inventoryId, qtyPerService)
           VALUES (?, ?, ?)
         `).run(b.service, invId, b.qty);
       }
@@ -406,7 +408,7 @@ function seedDefaults() {
     const now = Date.now();
     for (const p of legacyData.patients) {
       db.prepare(`
-        INSERT INTO patients (
+        INSERT OR IGNORE INTO patients (
           id, name, phone, age, gender, medicalHistory, allergies,
           lastVisit, lastService, notes, recallDays, recalledAt, recallCount,
           consentGivenAt, consentSource, optOut, createdAt, updatedAt
@@ -437,7 +439,7 @@ function seedDefaults() {
     const now = Date.now();
     for (const a of legacyData.appointments) {
       db.prepare(`
-        INSERT INTO appointments (
+        INSERT OR IGNORE INTO appointments (
           id, patientId, doctorId, chair, date, time, duration,
           service, notes, status, source, reminded, stockDeducted, invoiceId,
           createdAt, updatedAt
@@ -467,7 +469,7 @@ function seedDefaults() {
     for (const inv of legacyData.invoices) {
       const invNum = `INV-${new Date(inv.at || now).getFullYear()}-${String(inv.id).padStart(4, '0')}`;
       db.prepare(`
-        INSERT INTO invoices (
+        INSERT OR IGNORE INTO invoices (
           id, invoiceNumber, appointmentId, patientId, service,
           amount, discount, taxRate, taxAmount, totalAmount, paid, paidAt, method, notes,
           createdAt, updatedAt
@@ -496,7 +498,7 @@ function seedDefaults() {
     const now = Date.now();
     for (const l of legacyData.leads) {
       db.prepare(`
-        INSERT INTO leads (
+        INSERT OR IGNORE INTO leads (
           id, name, phone, source, cost, status, aiStage, clinicalIssue,
           urgency, followupCount, lastFollowupAt, patientId, createdAt, updatedAt
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Routine', ?, ?, ?, ?, ?)
@@ -525,7 +527,7 @@ function seedDefaults() {
       if (Array.isArray(msgs)) {
         for (const m of msgs) {
           db.prepare(`
-            INSERT INTO chats (phone, sender, message, status, createdAt)
+            INSERT OR IGNORE INTO chats (phone, sender, message, status, createdAt)
             VALUES (?, ?, ?, 'sent', ?)
           `).run(phone, m.f === 'bot' ? 'bot' : 'pt', m.t || '', m.at || Date.now());
         }

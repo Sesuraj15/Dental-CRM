@@ -25,36 +25,28 @@ export default function LoginModal({ onLoginSuccess }) {
   };
 
   return (
-    <div className="modal-overlay" style={{ background: 'var(--bg)', position: 'fixed', inset: 0, overflow: 'hidden' }}>
-      {/* Ambient Animated Background Mesh */}
-      <div className="ambient-background-layer" aria-hidden="true">
-        <div className="ambient-orb orb-1" />
-        <div className="ambient-orb orb-2" />
-        <div className="ambient-orb orb-3" />
-        <div className="ambient-grid-overlay" />
-      </div>
-
-      <div className="modal-content glass-card" style={{ maxWidth: 420, padding: 36, position: 'relative', zIndex: 10 }}>
-        <div style={{ textAlign: 'center', marginBottom: 26 }}>
+    <div className="modal-overlay" style={{ background: 'rgba(9, 13, 22, 0.85)' }}>
+      <div className="modal-content" style={{ maxWidth: 420, padding: 32 }}>
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <div style={{
-            width: 56,
-            height: 56,
-            borderRadius: 16,
-            background: 'linear-gradient(135deg, var(--indigo) 0%, var(--cyan) 100%)',
+            width: 52,
+            height: 52,
+            borderRadius: 14,
+            background: 'linear-gradient(135deg, #0d9488 0%, #06b6d4 100%)',
             color: '#ffffff',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            margin: '0 auto 16px',
-            boxShadow: '0 6px 20px var(--indigo-glow)'
+            margin: '0 auto 14px',
+            boxShadow: '0 4px 16px rgba(6, 182, 212, 0.4)'
           }}>
             <Activity size={28} />
           </div>
-          <h2 style={{ fontSize: 24, margin: '0 0 6px', color: 'var(--tx-primary)' }}>
+          <h2 style={{ fontSize: 22, margin: '0 0 6px', color: 'var(--tx-primary)' }}>
             DentaDesk AI
           </h2>
           <p style={{ margin: 0, fontSize: 13, color: 'var(--tx-muted)' }}>
-            Autonomous Practice Portal • Dr. Raj
+            Autonomous Practice CRM • Dr. Raj
           </p>
         </div>
 
